@@ -1,14 +1,20 @@
 import { expect, test } from "bun:test";
 import { Agent, Runner, tool } from "@openai/agents";
 import { z } from "zod";
-import { OpenGeniChatCompletionsModel } from "../src/model-provider-routing";
+import { indexedToolCallClient, OpenGeniChatCompletionsModel } from "../src/model-provider-routing";
 import { modelRequestPolicyForProvider } from "../src/model-provider-request-policy";
 import { projectHistoryForProvider } from "../src/provider-history-adapter";
 import { ReplayableJsonOpenAI, requestBodyText } from "../src/replayable-json-body";
 
 const signature = { google: { thought_signature: "opaque-signature-fixture" } };
 
-type Shape = "gemini" | "openai-deltas" | "fragmented-ids" | "split-extra";
+type Shape =
+  | "gemini"
+  | "openai-deltas"
+  | "fragmented-ids"
+  | "split-extra"
+  | "name-later"
+  | "custom-between";
 
 const splitExtra = { google: { other: "later-fixture" } };
 const mergedExtra = { google: { ...signature.google, ...splitExtra.google } };
@@ -16,9 +22,11 @@ const mergedExtra = { google: { ...signature.google, ...splitExtra.google } };
 // Gemini's compatible endpoint streams each tool call whole, in its own chunk,
 // with its id and no `index`; only the first call of a step carries the
 // signature. OpenAI-style streams split a call across deltas that share an
-// index, and only the first carries the id. The last two shapes are edge cases:
-// an index-less call whose continuation chunk carries a fresh id but no name,
-// and a signature object that arrives across two deltas.
+// index, and only the first carries the id. The remaining shapes are edge
+// cases: an index-less call whose continuation chunk carries a fresh id but no
+// name, a signature object that arrives across two deltas, index-less calls
+// whose name arrives after their id, and an index-less custom tool call
+// interleaved with a function call's arguments.
 function toolCallDeltas(shape: Shape, labels: string[]) {
   return labels.flatMap((label, index) => {
     const args = JSON.stringify({ key: label });
@@ -27,6 +35,26 @@ function toolCallDeltas(shape: Shape, labels: string[]) {
     if (shape === "gemini")
       return [
         { tool_calls: [{ ...call, function: { ...call.function, arguments: args }, ...extra }] },
+      ];
+    if (shape === "name-later")
+      return [
+        { tool_calls: [{ ...call, function: { name: "" } }] },
+        { tool_calls: [{ id: call.id, function: { name: "lookup" } }] },
+        { tool_calls: [{ id: call.id, function: { arguments: args }, ...extra }] },
+      ];
+    if (shape === "custom-between")
+      return [
+        {
+          tool_calls: [
+            { ...call, function: { name: "lookup", arguments: args.slice(0, 5) }, ...extra },
+          ],
+        },
+        {
+          tool_calls: [
+            { id: `custom-${label}`, type: "custom", custom: { name: "freeform", input: "x" } },
+          ],
+        },
+        { tool_calls: [{ function: { arguments: args.slice(5) } }] },
       ];
     if (shape === "fragmented-ids")
       return [
@@ -56,6 +84,8 @@ const cases = [
   { shape: "openai-deltas", labels: ["first", "second", "third"] },
   { shape: "fragmented-ids", labels: ["first"] },
   { shape: "split-extra", labels: ["first", "second"] },
+  { shape: "name-later", labels: ["first", "second"] },
+  { shape: "custom-between", labels: ["first"] },
 ] as const;
 
 for (const { shape, labels } of cases) {
@@ -177,6 +207,13 @@ test("extra_content stays on Chat history and is dropped for other wire APIs", (
       providerData: { extra_content: signature },
     },
     { type: "function_call_result", callId: "call-first", output: "ok" },
+    {
+      type: "message",
+      role: "assistant",
+      status: "completed",
+      content: [{ type: "output_text", text: "Done." }],
+      providerData: { extra_content: signature },
+    },
   ];
   const before = JSON.stringify(items);
 
@@ -196,6 +233,99 @@ test("extra_content stays on Chat history and is dropped for other wire APIs", (
       name: "lookup",
       arguments: "{}",
     });
+    expect(projected[4]).toEqual({
+      type: "message",
+      role: "assistant",
+      status: "completed",
+      content: [{ type: "output_text", text: "Done." }],
+    });
   }
   expect(JSON.stringify(items)).toBe(before);
+});
+
+function sseResponse(deltas: unknown[], finishReason: string) {
+  const chunks = [
+    ...deltas.map((delta) => ({ delta, finish_reason: null })),
+    { delta: {}, finish_reason: finishReason },
+  ].map((choice) => ({
+    id: "reply",
+    model: "gemini-3.8-flash",
+    created: 1,
+    object: "chat.completion.chunk",
+    choices: [{ index: 0, ...choice }],
+  }));
+  return new Response(
+    chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n",
+    { headers: { "content-type": "text/event-stream" } },
+  );
+}
+
+test("a streamed text answer's message signature is replayed on the next request", async () => {
+  const requests: Record<string, any>[] = [];
+  const client = new ReplayableJsonOpenAI({
+    apiKey: "fixture-key",
+    baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
+    maxRetries: 0,
+    fetch: async (_url, init) => {
+      requests.push(JSON.parse(await requestBodyText(init?.body)));
+      // Google sends a text answer's signature in its own message-level delta.
+      return requests.length === 1
+        ? sseResponse([{ role: "assistant", content: "No." }, { extra_content: signature }], "stop")
+        : sseResponse([{ role: "assistant", content: "You're welcome." }], "stop");
+    },
+  });
+  const agent = new Agent({
+    name: "Fixture",
+    model: new OpenGeniChatCompletionsModel(client, "gemini-3.8-flash"),
+  });
+  const runner = new Runner({ tracingDisabled: true });
+  const first = await runner.run(agent, "Is 1001 prime?", { stream: true });
+  for await (const _event of first) {
+    /* consume SDK stream */
+  }
+  await first.completed;
+  const history = JSON.parse(JSON.stringify(first.history));
+  const second = await runner.run(agent, [...history, { role: "user", content: "Thanks" }], {
+    stream: true,
+  });
+  for await (const _event of second) {
+    /* consume SDK stream */
+  }
+  await second.completed;
+
+  const answer = requests[1]!.messages.find(
+    (message: Record<string, any>) => message.role === "assistant",
+  );
+  expect(answer.extra_content).toEqual(signature);
+  expect(JSON.stringify(answer.content)).toContain("No.");
+});
+
+test("the indexing client keeps APIPromise response access for streamed creates", async () => {
+  const client = new ReplayableJsonOpenAI({
+    apiKey: "fixture-key",
+    baseURL: "https://example.test/v1beta/openai",
+    maxRetries: 0,
+    fetch: async () =>
+      sseResponse(
+        [
+          {
+            tool_calls: [
+              { id: "call-1", type: "function", function: { name: "lookup", arguments: "{}" } },
+            ],
+          },
+        ],
+        "stop",
+      ),
+  });
+  const wrapped = indexedToolCallClient(client);
+  expect(wrapped.baseURL).toBe(client.baseURL);
+  const { data, response } = await wrapped.chat.completions
+    .create({ model: "gemini-3.8-flash", messages: [], stream: true })
+    .withResponse();
+  expect(response.status).toBe(200);
+  const indexes: unknown[] = [];
+  for await (const chunk of data) {
+    for (const call of chunk.choices[0]?.delta.tool_calls ?? []) indexes.push(call.index);
+  }
+  expect(indexes).toEqual([0]);
 });

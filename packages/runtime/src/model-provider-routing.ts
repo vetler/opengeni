@@ -81,20 +81,26 @@ function forwarding<T extends object>(target: T, overrides: Record<string, () =>
   });
 }
 
+type TransformablePromise = Promise<unknown> & {
+  _thenUnwrap?: (transform: (data: unknown) => unknown) => Promise<unknown>;
+};
+
 /**
- * The SDK reads only `baseURL` and `chat.completions.create` from its client.
- * Streamed creates gain tool-call indexes before the SDK accumulates them;
- * everything else reaches the real client unchanged.
+ * Streamed Chat creates gain tool-call indexes before the SDK accumulates
+ * them; everything else reaches the real client unchanged. `_thenUnwrap`
+ * keeps the result an `APIPromise`, so `withResponse()`/`asResponse()` work.
  */
-function indexedToolCallClient(client: OpenAI): OpenAI {
+export function indexedToolCallClient(client: OpenAI): OpenAI {
   const create = (body: { stream?: unknown }, options?: unknown): Promise<unknown> => {
     const completions = client.chat.completions as unknown as {
-      create(body: unknown, options?: unknown): Promise<unknown>;
+      create(body: unknown, options?: unknown): TransformablePromise;
     };
     const pending = completions.create(body, options);
-    return body?.stream === true
-      ? pending.then((stream) => indexChatToolCallChunks(stream as AsyncIterable<unknown>))
-      : pending;
+    if (body?.stream !== true) return pending;
+    const index = (stream: unknown) => indexChatToolCallChunks(stream as AsyncIterable<unknown>);
+    return typeof pending._thenUnwrap === "function"
+      ? pending._thenUnwrap(index)
+      : Promise.resolve(pending).then(index);
   };
   return forwarding(client, {
     chat: () =>

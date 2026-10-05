@@ -679,20 +679,35 @@ adapts it (`packages/runtime/src/chat-tool-call-stream.ts`):
 - Each call arrives whole, in its own chunk, with its own id and no `index`.
   The SDK keys streamed calls by `index`, which would merge parallel calls into
   one call with concatenated names and arguments. Index-less deltas gain an
-  index before the SDK accumulates them: a new call id with a function name
-  starts a call, and anything else continues the previous one. Indexed
+  index before the SDK accumulates them: an unseen call id starts a call when
+  it names a function (or custom tool) or when the previous call of its kind
+  has complete arguments; anything else continues that call. Indexed
   (OpenAI-style) chunks pass through unchanged.
-- The first call of each step carries `extra_content.google.thought_signature`,
-  and Google rejects the next request with a 400 unless that object is
-  replayed on the same call. The SDK keeps it for non-streamed replies but
-  drops it while streaming, so it is restored to the call's `providerData` by
-  call id. Durable history keeps it, and the SDK replays it on that tool call.
+- The first call of each step, and the message of a text answer, carry
+  `extra_content.google.thought_signature`, and Google rejects the next request
+  with a 400 unless a call's object is replayed on that call. The SDK drops it
+  while streaming, so it is restored to the call's or message's `providerData`;
+  a non-streamed reply's message signature moves from its text part to the
+  message on the next Chat request. Durable history keeps it, and the SDK
+  replays it.
 
-Request-locally (`packages/runtime/src/gemini-chat-request.ts`), Chat requests
-to a Gemini upstream clamp `reasoning_effort` `xhigh` or `max`, which Gemini
-rejects, to `high`. Chat requests to any other upstream drop
-`tool_calls[].extra_content`, and history projected to the Responses or Claude
-Messages API drops it too, because only Gemini reads it.
+Request-locally (`packages/runtime/src/gemini-chat-request.ts`), a direct
+Gemini Chat route (Google's endpoint, or a Gemini model id on a provider other
+than OpenRouter or Vercel Gateway) follows the model's declared reasoning:
+
+- A model without runnable reasoning control (`reasoningEffort: false`, the
+  registry default) sends no `reasoning_effort`, so Gemini uses its own default
+  thinking level.
+- Otherwise the effort clamps to the highest declared level at or below the
+  requested one, falling back to the model's default effort. Every Gemini 3
+  model rejects `minimal`, `xhigh` and `max`, so those never count as declared,
+  which keeps `reasoningEffort: true` (the deployment's levels) safe. Per-model
+  limits come from the declared efforts: a Pro model rejects `none`, so give it
+  a full `capabilities` record whose `reasoning.efforts` omit `none`.
+
+Chat requests to any other route drop `extra_content` from assistant messages
+and tool calls, and history projected to the Responses or Claude Messages API
+drops it too, because only Gemini reads it.
 
 The same endpoint returns errors as a one-element array (`[{ "error": … }]`).
 `ReplayableJsonOpenAI` and the quota retry veto both unwrap exactly that shape

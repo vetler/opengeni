@@ -27,7 +27,7 @@ import {
   XaiSubscriptionUnavailableError,
 } from "./model-provider-errors";
 import type { ModelJsonRequestPolicy } from "./replayable-json-body";
-import { geminiChatRequestPolicy } from "./gemini-chat-request";
+import { geminiChatRequestPolicy, type ModelReasoningLookup } from "./gemini-chat-request";
 import { geminiFunctionResponseRefPolicy } from "./gemini-function-response";
 import {
   chatReasoning,
@@ -203,7 +203,9 @@ export function azureModelRequestPolicy({
 export function modelRequestPolicyForProvider(
   provider: ResolvedModelProvider,
   gatewayPolicies?: GatewayRequestPolicyLookup,
+  modelReasoning?: ModelReasoningLookup,
 ): ModelJsonRequestPolicy {
+  const geminiChat = geminiChatRequestPolicy(provider, modelReasoning);
   const providerPolicy: ModelJsonRequestPolicy = ({ path, body }) => {
     if (
       (provider.kind === "openrouter-managed" ||
@@ -299,11 +301,8 @@ export function modelRequestPolicyForProvider(
       body: result?.body ?? request.body,
     });
     const withRefs = gemini?.body ? { ...result, body: gemini.body } : result;
-    const geminiChat = geminiChatRequestPolicy({
-      path: request.path,
-      body: withRefs?.body ?? request.body,
-    });
-    return geminiChat?.body ? { ...withRefs, body: geminiChat.body } : withRefs;
+    const chat = geminiChat({ path: request.path, body: withRefs?.body ?? request.body });
+    return chat?.body ? { ...withRefs, body: chat.body } : withRefs;
   };
 }
 
@@ -323,12 +322,15 @@ export const chatModelRequestPolicy: ModelJsonRequestPolicy = ({ path, body }) =
     // Recover their reasoning at message scope before removing invalid nesting.
     let retainedReasoning = chatReasoning(message);
     let retainedDetails = chatReasoningDetails(message);
+    // A non-streamed Gemini reply's message-level thought signature lands here too.
+    let retainedExtraContent = message.extra_content;
     const content = message.content.map((part: unknown) => {
       if (!part || typeof part !== "object" || Array.isArray(part)) return part;
       const record = part as Record<string, unknown>;
       if (record.type !== "text" && record.type !== "refusal") return part;
       retainedReasoning ??= chatReasoning(record);
       retainedDetails ??= chatReasoningDetails(record);
+      retainedExtraContent ??= record.extra_content;
       const outputOnlyKeys = [
         "annotations",
         "logprobs",
@@ -339,6 +341,7 @@ export const chatModelRequestPolicy: ModelJsonRequestPolicy = ({ path, body }) =
         "reasoning",
         "reasoning_content",
         "reasoning_details",
+        "extra_content",
         "tools",
         ...(record.type === "text" ? ["refusal"] : ["content"]),
       ];
@@ -355,6 +358,7 @@ export const chatModelRequestPolicy: ModelJsonRequestPolicy = ({ path, body }) =
       content,
       ...(retainedReasoning ? { [retainedReasoning.field]: retainedReasoning.text } : {}),
       ...(retainedDetails ? { reasoning_details: retainedDetails } : {}),
+      ...(retainedExtraContent ? { extra_content: retainedExtraContent } : {}),
     };
   });
   const joined = joinChatReasoningMessages(messages);

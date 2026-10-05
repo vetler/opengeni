@@ -187,6 +187,7 @@ function providerClientCacheKey(
   provider: ResolvedModelProvider,
   settings: Settings,
   gatewayPolicies: ReadonlyMap<string, unknown> | undefined,
+  modelReasoning?: ReadonlyMap<string, unknown>,
 ): string {
   const sortedRecord = (value: Record<string, string> | undefined) =>
     value
@@ -216,6 +217,13 @@ function providerClientCacheKey(
         gatewayPolicies: gatewayPolicies
           ? [...gatewayPolicies.entries()].sort(([left], [right]) => left.localeCompare(right))
           : null,
+        ...(modelReasoning
+          ? {
+              modelReasoning: [...modelReasoning.entries()].sort(([left], [right]) =>
+                left.localeCompare(right),
+              ),
+            }
+          : {}),
         openaiMaxRetries: settings.openaiMaxRetries,
         streamIdlePolicy: modelStreamIdlePolicy(settings, provider),
         builtin:
@@ -325,7 +333,16 @@ export function buildProviderClient(provider: ResolvedModelProvider, settings: S
           .map((model) => [model.upstreamModelId, model.requestPolicy] as const),
       )
     : undefined;
-  const cacheKey = providerClientCacheKey(provider, settings, gatewayPolicies);
+  // Declared reasoning per upstream model, for Gemini's effort vocabulary.
+  const modelReasoning =
+    provider.api === "chat" && !gatewayProvider && !openRouterProvider
+      ? new Map(
+          configuredModels(settings)
+            .filter((model) => model.providerId === provider.id)
+            .map((model) => [model.upstreamModelId, model.capabilities.reasoning] as const),
+        )
+      : undefined;
+  const cacheKey = providerClientCacheKey(provider, settings, gatewayPolicies, modelReasoning);
   const cached = scopedCredentialProvider ? undefined : providerClientCache.get(cacheKey);
   if (cached) {
     return cached;
@@ -434,7 +451,13 @@ export function buildProviderClient(provider: ResolvedModelProvider, settings: S
                 ),
               ),
             },
-            { modelRequestPolicy: modelRequestPolicyForProvider(provider, gatewayPolicies) },
+            {
+              modelRequestPolicy: modelRequestPolicyForProvider(
+                provider,
+                gatewayPolicies,
+                modelReasoning,
+              ),
+            },
           );
   if (!scopedCredentialProvider) {
     cacheProviderClient(cacheKey, provider.id, client);

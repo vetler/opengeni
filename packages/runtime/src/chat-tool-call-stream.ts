@@ -13,10 +13,11 @@ type JsonObject = Record<string, unknown>;
  *   names and arguments. `indexChatToolCallChunks` gives index-less deltas an
  *   index before the SDK sees them, so it builds separate calls itself.
  * - It attaches `extra_content.google.thought_signature` to the first call of
- *   each step and rejects the next request with `400 Function call is missing
- *   a thought_signature` unless that object is replayed on the same call.
- *   `withChatToolCallExtraContent` restores it to the completed call's
- *   `providerData`, the SDK's non-streamed shape, which the SDK replays.
+ *   each step, and to the message of a text answer, and rejects the next
+ *   request with `400 Function call is missing a thought_signature` unless a
+ *   call's object is replayed on the same call. `withChatToolCallExtraContent`
+ *   restores both to the completed items' `providerData`, which the SDK
+ *   spreads back onto the replayed tool call and assistant message.
  */
 function object(value: unknown): JsonObject | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -24,30 +25,61 @@ function object(value: unknown): JsonObject | undefined {
     : undefined;
 }
 
-type ToolCallIndexes = { byCallId: Map<string, number>; last?: number; next: number };
+type ToolCallKind = "function" | "custom";
 
-/** An index-less delta starts a new call only when it names a new call id and
- * a function; anything else continues the previous call. */
+type ToolCallIndexes = {
+  byCallId: Map<string, number>;
+  argumentsByIndex: Map<number, string>;
+  /** The latest call of each kind; continuation deltas follow their own kind. */
+  last: Partial<Record<ToolCallKind, number>>;
+  next: number;
+};
+
+function isCompleteJson(text: string | undefined): boolean {
+  if (!text) return false;
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** An index-less delta starts a new call when it names an unseen call id and a
+ * function or custom tool, or when it carries an unseen id after the previous
+ * call of its kind has complete arguments; anything else continues that call. */
 function withToolCallIndexes(delta: JsonObject, indexes: ToolCallIndexes): JsonObject {
   if (!Array.isArray(delta.tool_calls)) return delta;
   let changed = false;
   const toolCalls = delta.tool_calls.map((value: unknown) => {
     const call = object(value);
     if (!call) return value;
-    if (typeof call.index === "number") {
-      indexes.next = Math.max(indexes.next, call.index + 1);
-      indexes.last = call.index;
-      return value;
-    }
-    const id = typeof call.id === "string" && call.id.length > 0 ? call.id : undefined;
-    const name = object(call.function)?.name;
-    const startsCall = id !== undefined && typeof name === "string" && name.length > 0;
-    let index = id !== undefined ? indexes.byCallId.get(id) : undefined;
+    const kind: ToolCallKind =
+      call.type === "custom" || object(call.custom) ? "custom" : "function";
+    let index = typeof call.index === "number" ? call.index : undefined;
+    const indexed = index !== undefined;
     if (index === undefined) {
-      index = startsCall || indexes.last === undefined ? indexes.next++ : indexes.last;
+      const id = typeof call.id === "string" && call.id.length > 0 ? call.id : undefined;
+      const name = object(call[kind])?.name;
+      const named = typeof name === "string" && name.length > 0;
+      const previous = indexes.last[kind];
+      index = id !== undefined ? indexes.byCallId.get(id) : undefined;
+      if (index === undefined) {
+        const previousComplete =
+          previous === undefined || isCompleteJson(indexes.argumentsByIndex.get(previous));
+        const startsCall = id !== undefined && (named || previousComplete);
+        index = startsCall || previous === undefined ? indexes.next++ : previous;
+        if (startsCall && id !== undefined) indexes.byCallId.set(id, index);
+      }
+    } else {
+      indexes.next = Math.max(indexes.next, index + 1);
     }
-    if (id !== undefined && startsCall) indexes.byCallId.set(id, index);
-    indexes.last = index;
+    const fragment = object(call.function)?.arguments;
+    if (typeof fragment === "string") {
+      indexes.argumentsByIndex.set(index, (indexes.argumentsByIndex.get(index) ?? "") + fragment);
+    }
+    indexes.last[kind] = index;
+    if (indexed) return value;
     changed = true;
     return { ...call, index };
   });
@@ -68,7 +100,10 @@ export async function* indexChatToolCallChunks<T>(chunks: AsyncIterable<T>): Asy
       const delta = object(choice?.delta);
       if (!choice || !delta) return value;
       let state = indexes.get(choice.index);
-      if (!state) indexes.set(choice.index, (state = { byCallId: new Map(), next: 0 }));
+      if (!state) {
+        state = { byCallId: new Map(), argumentsByIndex: new Map(), last: {}, next: 0 };
+        indexes.set(choice.index, state);
+      }
       const indexed = withToolCallIndexes(delta, state);
       if (indexed === delta) return value;
       changed = true;
@@ -78,9 +113,12 @@ export async function* indexChatToolCallChunks<T>(chunks: AsyncIterable<T>): Asy
   }
 }
 
+/** Signatures by the SDK's call id (the first id seen for an index, read from
+ * chunks `indexChatToolCallChunks` already indexed) and for the message. */
 export type ChatToolCallExtraContent = {
   byCallId: Map<string, JsonObject>;
   callIdByIndex: Map<number, string>;
+  message?: JsonObject;
 };
 
 export function newChatToolCallExtraContent(): ChatToolCallExtraContent {
@@ -102,18 +140,20 @@ export function appendChatToolCallExtraContent(
   accumulated: ChatToolCallExtraContent,
   delta: unknown,
 ): void {
-  const toolCalls = object(delta)?.tool_calls;
+  const record = object(delta);
+  const messageExtraContent = object(record?.extra_content);
+  if (messageExtraContent) {
+    accumulated.message = mergeExtraContent(accumulated.message, messageExtraContent);
+  }
+  const toolCalls = record?.tool_calls;
   if (!Array.isArray(toolCalls)) return;
   for (const value of toolCalls) {
     const call = object(value);
-    if (!call) continue;
-    const index = typeof call.index === "number" ? call.index : undefined;
+    if (!call || typeof call.index !== "number") continue;
     const id = typeof call.id === "string" && call.id.length > 0 ? call.id : undefined;
-    // Like the SDK, a call keeps the first id seen for its index.
-    const known = index !== undefined ? accumulated.callIdByIndex.get(index) : undefined;
-    const callId = known ?? id;
+    const callId = accumulated.callIdByIndex.get(call.index) ?? id;
     if (callId === undefined) continue;
-    if (index !== undefined && known === undefined) accumulated.callIdByIndex.set(index, callId);
+    accumulated.callIdByIndex.set(call.index, callId);
     const extraContent = object(call.extra_content);
     if (extraContent) {
       accumulated.byCallId.set(
@@ -128,14 +168,29 @@ export function withChatToolCallExtraContent<T extends ModelResponse["output"][n
   output: T[],
   accumulated: ChatToolCallExtraContent,
 ): T[] {
-  if (accumulated.byCallId.size === 0) return output;
+  if (accumulated.byCallId.size === 0 && !accumulated.message) return output;
+  let messageAttached = false;
   return output.map((item) => {
-    if (item.type !== "function_call") return item;
-    const extraContent = accumulated.byCallId.get(item.callId);
-    if (!extraContent) return item;
-    return {
-      ...item,
-      providerData: { ...item.providerData, extra_content: structuredClone(extraContent) },
-    };
+    if (item.type === "function_call") {
+      const extraContent = accumulated.byCallId.get(item.callId);
+      if (!extraContent) return item;
+      return {
+        ...item,
+        providerData: { ...item.providerData, extra_content: structuredClone(extraContent) },
+      };
+    }
+    if (
+      item.type === "message" &&
+      item.role === "assistant" &&
+      accumulated.message &&
+      !messageAttached
+    ) {
+      messageAttached = true;
+      return {
+        ...item,
+        providerData: { ...item.providerData, extra_content: structuredClone(accumulated.message) },
+      };
+    }
+    return item;
   });
 }
