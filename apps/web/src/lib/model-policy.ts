@@ -1,3 +1,6 @@
+import type { ClientModel, ReasoningEffort } from "@opengeni/sdk";
+import { effortOptionsForModel } from "@opengeni/react";
+
 /** Web-facing model-picker helpers (re-exported from `@opengeni/react`). */
 export {
   advancedSourceSummary,
@@ -17,3 +20,18 @@ export {
   sortPickerRows,
   type PickerModelRow,
 } from "@opengeni/react";
+
+/**
+ * Whether a send may carry this reasoning effort. A model without effort
+ * control (no catalog efforts) never receives one, so any accepted value is
+ * valid; the picker's placeholder option is not a constraint. The server
+ * default for such a model is the deployment effort, not that placeholder.
+ */
+export function reasoningEffortAllowedForModel(
+  model: ClientModel,
+  effort: ReasoningEffort,
+): boolean {
+  return (
+    !model.capabilities?.reasoning.efforts.length || effortOptionsForModel(model).includes(effort)
+  );
+}

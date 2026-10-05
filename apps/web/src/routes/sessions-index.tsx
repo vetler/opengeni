@@ -127,9 +127,9 @@ import {
   resolveSelectableMachineSandboxId,
 } from "@/lib/machine-selectability";
 import {
-  effortOptionsForModel,
   findPickerRow,
   modelUsesCredits,
+  reasoningEffortAllowedForModel,
   runnableLatencyModesForModel,
   type PickerModelRow,
 } from "@/lib/model-policy";
@@ -1041,7 +1041,7 @@ function SessionsIndexRouteContent({
   const selectedPolicyRow = findPickerRow(modelCatalog.rows, context.model);
   const newSessionPolicyValid = Boolean(
     selectedPolicyRow?.selectable &&
-    effortOptionsForModel(selectedPolicyRow.catalog).includes(context.reasoningEffort) &&
+    reasoningEffortAllowedForModel(selectedPolicyRow.catalog, context.reasoningEffort) &&
     (context.latencyMode === "standard" ||
       runnableLatencyModesForModel(selectedPolicyRow.catalog).includes(context.latencyMode)),
   );

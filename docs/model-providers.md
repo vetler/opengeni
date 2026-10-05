@@ -423,8 +423,9 @@ the registry default) receives no reasoning effort on the wire. Its turns
 still record an accepted effort, but the worker omits it rather than sending
 the deployment default, which an upstream may reject (Gemini refuses `xhigh`).
 The same holds for custom OpenRouter slugs and customer OpenAI and Azure
-OpenAI connections. Set `reasoningEffort: true` (or a full `capabilities.reasoning`
-record) to send the session's effort.
+OpenAI connections, and the web new-session composer accepts any recorded
+effort for such a model instead of requiring its picker placeholder. Set `reasoningEffort: true`
+(or a full `capabilities.reasoning` record) to send the session's effort.
 
 Generic registry JSON cannot set `credentialSource` or `billing`. OpenGeni
 derives both from the provider kind:
