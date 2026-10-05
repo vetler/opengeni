@@ -137,6 +137,16 @@ function portableChatMetadata(
   previous: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
   const metadata = item.providerData as Record<string, unknown> | undefined;
+  if (item.type === "function_call" && metadata && "extra_content" in metadata) {
+    // Chat tool-call `extra_content` carries Gemini thought signatures. No other
+    // wire API reads it, and the SDK would spread it onto the wire item.
+    const { extra_content: _chatOnly, ...providerData } = metadata;
+    const { providerData: _metadata, ...projected } = item;
+    return portableChatMetadata(
+      Object.keys(providerData).length ? { ...projected, providerData } : projected,
+      previous,
+    );
+  }
   if (item.type === "function_call" && metadata?.type === "function" && metadata.function) {
     // Non-streamed Chat calls also retain their nested wire function envelope.
     // The canonical call already owns name/arguments/callId; Responses has no

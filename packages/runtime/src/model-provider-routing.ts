@@ -22,6 +22,11 @@ import {
   withChatReasoning,
   type ChatReasoning,
 } from "./chat-reasoning";
+import {
+  appendChatToolCallDeltas,
+  newChatToolCallStream,
+  withChatToolCallStream,
+} from "./chat-tool-call-stream";
 import { instrumentedModelFetch } from "./model-provider-client";
 import { CODEX_MODEL_ID_PREFIX } from "@opengeni/codex";
 import { XAI_SUBSCRIPTION_MODEL_ID_PREFIX } from "@opengeni/xai-subscription";
@@ -86,12 +91,14 @@ export class OpenGeniChatCompletionsModel extends OpenAIChatCompletionsModel {
     let finishReason: unknown;
     let reasoning: ChatReasoning | undefined;
     let reasoningDetails: Record<string, unknown>[] | undefined;
+    const toolCalls = newChatToolCallStream();
     for await (const event of super.getStreamedResponse(chatRequest(request))) {
       if (event.type === "model") {
         const observed = chatCompletionFinishReason(event.event);
         if (observed !== undefined && observed !== null) {
           finishReason = observed;
         }
+        appendChatToolCallDeltas(toolCalls, primaryChatChoice(event.event)?.delta);
         const delta = chatReasoning(primaryChatChoice(event.event)?.delta);
         const details = chatReasoningDetails(primaryChatChoice(event.event)?.delta);
         if (details) appendChatReasoningDetails((reasoningDetails ??= []), details);
@@ -109,7 +116,11 @@ export class OpenGeniChatCompletionsModel extends OpenAIChatCompletionsModel {
             ...event,
             response: {
               ...event.response,
-              output: withChatReasoning(event.response.output, reasoning, reasoningDetails),
+              output: withChatReasoning(
+                withChatToolCallStream(event.response.output, toolCalls),
+                reasoning,
+                reasoningDetails,
+              ),
             },
           }
         : event;

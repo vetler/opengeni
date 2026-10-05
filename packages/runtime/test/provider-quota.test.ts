@@ -439,12 +439,12 @@ describe("SDK retry veto", () => {
         expected: null,
       },
       {
-        // An array body has no top-level `error`, so the SDK error carries no provider text.
+        // Both readers unwrap the one-element array, so the provider text is evidence.
         name: "Gemini OpenAI-compatible array body",
         body: JSON.stringify([
           { error: { code: 429, message: "You exceeded your current quota." } },
         ]),
-        expected: null,
+        expected: "quota",
       },
       {
         name: "OpenRouter free-models-per-day",

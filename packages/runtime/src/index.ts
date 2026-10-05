@@ -2097,7 +2097,11 @@ export type BuildAgentOptions = {
     toolCallId: string;
     response: HumanInputResponse;
   };
-  reasoningEffort?: ReasoningEffort;
+  /**
+   * Omitted falls back to the deployment default. `null` sends no effort: the
+   * resolved model declares no runnable reasoning control.
+   */
+  reasoningEffort?: ReasoningEffort | null;
   /** Provider-generated Responses summaries. Omitted preserves the existing wire. */
   reasoningSummary?: "auto" | "detailed";
   /** Product latency selection frozen onto this turn. */
@@ -3048,7 +3052,9 @@ export function buildOpenGeniAgent(
     instructions: instructionInspection.composed,
     modelSettings: {
       reasoning: {
-        effort: options.reasoningEffort ?? settings.openaiReasoningEffort,
+        ...(options.reasoningEffort === null
+          ? {}
+          : { effort: options.reasoningEffort ?? settings.openaiReasoningEffort }),
         summary: options.reasoningSummary ?? "detailed",
       },
       ...(options.textVerbosity ? { text: { verbosity: options.textVerbosity } } : {}),

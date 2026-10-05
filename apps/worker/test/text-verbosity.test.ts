@@ -26,6 +26,7 @@ import { requestBodyText } from "../../../packages/runtime/src/replayable-json-b
 import { ScriptedModel, testSettings } from "@opengeni/testing";
 import { buildTurnAgent, type BuildTurnAgentDeps } from "../src/activities/agent-turn/agent-build";
 import {
+  reasoningEffortForTurn,
   reasoningSummaryForTurn,
   textVerbosityForTurn,
 } from "../src/activities/agent-turn/tool-policy";
@@ -180,6 +181,20 @@ test("auto summaries require a supported Responses route and accepted reasoning 
     ),
   ).toBeUndefined();
   expect(reasoningSummaryForTurn(null)).toBeUndefined();
+});
+
+test("turn effort is omitted only for a model without runnable reasoning control", () => {
+  const settings = builtinSettings();
+  expect(reasoningEffortForTurn(resolved(settings, "gpt-5.6-sol"), "xhigh")).toBe("xhigh");
+  expect(reasoningEffortForTurn(resolved(settings, "azure-sol/gpt-6-sol"), "medium")).toBe(
+    "medium",
+  );
+  // Registry models default to `reasoningEffort: false`: the accepted turn
+  // effort stays on the turn, but no deployment default reaches the wire.
+  for (const modelId of ["accounts/fireworks/models/glm-5p2", "azure-sol/gpt-4.1"]) {
+    expect(reasoningEffortForTurn(resolved(settings, modelId), "xhigh")).toBeNull();
+  }
+  expect(reasoningEffortForTurn(null, "high")).toBe("high");
 });
 
 // Execute the exact production publisher, including its attempt fence. Only
@@ -419,7 +434,9 @@ test("the worker builds Codex and Azure turns with low verbosity and leaves othe
 
   const compatible = await buildWorkerAgent(builtinSettings(), "compatible/gpt-5.6-sol");
   expect(compatible.modelSettings.text).toBeUndefined();
-  expect(compatible.modelSettings.reasoning).toEqual({ effort: "medium", summary: "detailed" });
+  // This registry model declares no runnable reasoning control, so the turn's
+  // accepted effort is not sent to it.
+  expect(compatible.modelSettings.reasoning).toEqual({ summary: "detailed" });
 });
 
 function summaryStream() {

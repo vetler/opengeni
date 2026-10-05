@@ -418,6 +418,14 @@ A registry model may add:
 Legacy `reasoningEffort` and `hostedWebSearch` booleans remain accepted. When a
 full capability record is also present, the legacy booleans must agree with it.
 
+A model whose reasoning capability is not runnable (`reasoningEffort: false`,
+the registry default) receives no reasoning effort on the wire. Its turns
+still record an accepted effort, but the worker omits it rather than sending
+the deployment default, which an upstream may reject (Gemini refuses `xhigh`).
+The same holds for custom OpenRouter slugs and customer OpenAI and Azure
+OpenAI connections. Set `reasoningEffort: true` (or a full `capabilities.reasoning`
+record) to send the session's effort.
+
 Generic registry JSON cannot set `credentialSource` or `billing`. OpenGeni
 derives both from the provider kind:
 
@@ -666,6 +674,29 @@ multimodal part references. A request-local projection
 that decode to `$ref` to `_$ref` inside valid-JSON function/tool outputs, so a
 `tool_search` schema result cannot fail the turn with a 400. Canonical history
 is unchanged and the projection is deterministic for prompt caching.
+
+Google's OpenAI-compatible Chat Completions endpoint streams tool calls in a
+shape the SDK's stream accumulator mishandles, so `OpenGeniChatCompletionsModel`
+repairs the completed output from the raw chunks
+(`packages/runtime/src/chat-tool-call-stream.ts`):
+
+- Each call arrives whole, in its own chunk, with its own id and no `index`.
+  The SDK keys streamed calls by `index`, which would merge parallel calls into
+  one call with concatenated names and arguments; they are rebuilt as separate
+  calls by id. Indexed (OpenAI-style) streams keep the SDK's items.
+- The first call of each step carries `extra_content.google.thought_signature`,
+  and Google rejects the next request with a 400 unless that object is
+  replayed on the same call. The SDK keeps it for non-streamed replies but
+  drops it while streaming, so it is restored to the call's `providerData` by
+  call id. Durable history keeps it, and the SDK replays it on that tool call.
+  History projected to the Responses or Claude Messages API drops it, because
+  only a Chat route can read it.
+
+The same endpoint returns errors as a one-element array (`[{ "error": … }]`).
+`ReplayableJsonOpenAI` and the quota retry veto both unwrap exactly that shape
+(`providerErrorBody` in `packages/runtime/src/replayable-json-body.ts`), so the
+provider message reaches `turn.failed` instead of `400 status code (no body)`
+and Gemini quota wording is classified like any other provider's.
 
 Every Gateway request replaces caller routing options with the reviewed provider
 list in both `only` and `order`, sends no model fallback list, and disables OpenAI

@@ -1,4 +1,5 @@
 import { APIError } from "openai";
+import { providerErrorBody } from "./replayable-json-body";
 
 /**
  * Provider quota exhaustion versus ordinary rate limiting.
@@ -391,7 +392,7 @@ export async function classifyProviderQuotaResponse(
   }
   const sdkError = APIError.generate(
     response.status,
-    json as object | undefined,
+    providerErrorBody(json) as object | undefined,
     json ? undefined : text,
     response.headers,
   );

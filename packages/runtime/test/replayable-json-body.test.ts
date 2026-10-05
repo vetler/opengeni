@@ -240,6 +240,29 @@ describe("replayable JSON model requests", () => {
     }
   });
 
+  test("reads the provider message from a one-element array error body", async () => {
+    const message =
+      "Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly.";
+    for (const [body, expected] of [
+      [[{ error: { code: 400, message, status: "INVALID_ARGUMENT" } }], `400 ${message}`],
+      [{ error: { message } }, `400 ${message}`],
+      [[{ error: { message } }, { error: { message } }], "400 status code (no body)"],
+      [[{ message }], "400 status code (no body)"],
+    ] as const) {
+      const client = new ReplayableJsonOpenAI({
+        apiKey: "test",
+        baseURL: "https://replayable.test/v1",
+        maxRetries: 0,
+        fetch: async () => Response.json(body, { status: 400 }),
+      });
+      const thrown = await client
+        .post("/chat/completions", { body: { model: "m", messages: [] } })
+        .then(() => null)
+        .catch((caught: unknown) => caught);
+      expect((thrown as Error).message).toBe(expected);
+    }
+  });
+
   test("preserves and case-insensitively overrides every OpenAI header representation", async () => {
     const headerShapes: unknown[] = [
       {

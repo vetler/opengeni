@@ -117,7 +117,7 @@ export class ReplayableJsonOpenAI extends OpenAI {
     headers: Headers,
   ): APIError {
     rethrowModelTransportAdmissionRefusal(headers);
-    return super.makeStatusError(status, error, message, headers);
+    return super.makeStatusError(status, providerErrorBody(error), message, headers);
   }
 
   override post<Rsp>(path: string, opts?: OpenAIPostOptions): APIPromise<Rsp> {
@@ -170,6 +170,22 @@ export class ReplayableJsonOpenAI extends OpenAI {
     request[REPLAYABLE_REQUEST_BODY_FACTORY] = () => replayable.createStream();
     return built;
   }
+}
+
+/**
+ * Google's OpenAI-compatible endpoint wraps its error object in a one-element
+ * array (`[{ "error": { ... } }]`). The SDK reads `body.error`, so the
+ * provider's message would surface as "400 status code (no body)". Unwrap
+ * exactly that shape; the quota veto builds its SDK error from the same body.
+ */
+export function providerErrorBody<T>(body: T): T {
+  if (!Array.isArray(body) || body.length !== 1) return body;
+  const only: unknown = body[0];
+  const error =
+    only && typeof only === "object" && !Array.isArray(only)
+      ? (only as { error?: unknown }).error
+      : undefined;
+  return error && typeof error === "object" ? (only as T) : body;
 }
 
 function isModelRequestPath(path: string): boolean {
