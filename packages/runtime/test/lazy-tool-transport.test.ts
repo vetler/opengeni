@@ -941,6 +941,42 @@ describe("generic lazy tool dispatch", () => {
     );
   });
 
+  test("keeps a dispatched call's Chat extra_content through rename and restore", async () => {
+    // Gemini Chat routes require the thought signature on the replayed call.
+    const signature = { google: { thought_signature: "opaque-signature-fixture" } };
+    const agent = agentWith(weatherTool());
+    const runtime = installLazyToolRuntime(agent, "generic_dispatch", new Set([SERVER_ID]));
+    const model = new ScriptedStreamingModel([
+      [
+        {
+          type: "function_call",
+          callId: "signed-invoke",
+          name: "tool_invoke",
+          arguments: JSON.stringify({ name: WEATHER_TOOL, arguments: { city: "Oslo" } }),
+          providerData: { extra_content: signature },
+        },
+      ],
+      [finalMessage("done")],
+    ]);
+
+    await runStreamed(agent, model, runtime);
+
+    const followUp = model.requests[1]!.input as Array<Record<string, unknown>>;
+    const call = followUp.find(
+      (candidate) => candidate.type === "function_call" && candidate.callId === "signed-invoke",
+    );
+    expect(call).toMatchObject({
+      name: "tool_invoke",
+      providerData: { extra_content: signature },
+    });
+    expect(JSON.stringify(call)).not.toContain("opengeni.lazy_dispatch.v1");
+    const result = followUp.find(
+      (candidate) =>
+        candidate.type === "function_call_result" && candidate.callId === "signed-invoke",
+    );
+    expect(JSON.stringify(result)).toContain("weather:Oslo");
+  });
+
   test("does not surface internal late-registration items as user-visible tool steps", () => {
     const callId = "opengeni:lazy-dispatch:register:invoke-1";
     expect(

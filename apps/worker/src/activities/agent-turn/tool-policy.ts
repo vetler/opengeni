@@ -4,7 +4,7 @@ import {
   type LazyToolTransport,
   type OpenGeniRuntime,
 } from "@opengeni/runtime";
-import type { ReasoningEffort, TurnExecutionPolicyV1 } from "@opengeni/contracts";
+import type { TurnExecutionPolicyV1 } from "@opengeni/contracts";
 import {
   configuredModelForAcceptedTurnExecutionPolicy,
   isDirectOpenAiApiBaseUrl,
@@ -160,18 +160,6 @@ export function reasoningSummaryForTurn(
     (provider.builtin && provider.id === "openai" && isDirectOpenAiApiBaseUrl(provider.baseUrl))
     ? "auto"
     : undefined;
-}
-
-/**
- * A model without runnable reasoning control gets no effort on the wire, like
- * the session-title request. `null` stops the runtime falling back to the
- * deployment default, which such a provider may reject (Gemini refuses `xhigh`).
- */
-export function reasoningEffortForTurn(
-  resolvedModel: { configured: { capabilities: { reasoning: { runnable: boolean } } } } | null,
-  effort: ReasoningEffort,
-): ReasoningEffort | null {
-  return resolvedModel && !resolvedModel.configured.capabilities.reasoning.runnable ? null : effort;
 }
 
 /**

@@ -23,9 +23,10 @@ import {
   type ChatReasoning,
 } from "./chat-reasoning";
 import {
-  appendChatToolCallDeltas,
-  newChatToolCallStream,
-  withChatToolCallStream,
+  appendChatToolCallExtraContent,
+  indexChatToolCallChunks,
+  newChatToolCallExtraContent,
+  withChatToolCallExtraContent,
 } from "./chat-tool-call-stream";
 import { instrumentedModelFetch } from "./model-provider-client";
 import { CODEX_MODEL_ID_PREFIX } from "@opengeni/codex";
@@ -70,8 +71,46 @@ function chatRequest(request: ModelRequest): ModelRequest {
   );
 }
 
+function forwarding<T extends object>(target: T, overrides: Record<string, () => unknown>): T {
+  return new Proxy(target, {
+    get(source, key) {
+      if (typeof key === "string" && Object.hasOwn(overrides, key)) return overrides[key]!();
+      const value = Reflect.get(source, key, source);
+      return typeof value === "function" ? value.bind(source) : value;
+    },
+  });
+}
+
+/**
+ * The SDK reads only `baseURL` and `chat.completions.create` from its client.
+ * Streamed creates gain tool-call indexes before the SDK accumulates them;
+ * everything else reaches the real client unchanged.
+ */
+function indexedToolCallClient(client: OpenAI): OpenAI {
+  const create = (body: { stream?: unknown }, options?: unknown): Promise<unknown> => {
+    const completions = client.chat.completions as unknown as {
+      create(body: unknown, options?: unknown): Promise<unknown>;
+    };
+    const pending = completions.create(body, options);
+    return body?.stream === true
+      ? pending.then((stream) => indexChatToolCallChunks(stream as AsyncIterable<unknown>))
+      : pending;
+  };
+  return forwarding(client, {
+    chat: () =>
+      forwarding(client.chat, {
+        completions: () => forwarding(client.chat.completions, { create: () => create }),
+      }),
+  });
+}
+
 /** Reject ambiguous completion before the SDK can commit output or execute tools. */
 export class OpenGeniChatCompletionsModel extends OpenAIChatCompletionsModel {
+  constructor(...args: ConstructorParameters<typeof OpenAIChatCompletionsModel>) {
+    const [client, ...rest] = args;
+    super(indexedToolCallClient(client), ...rest);
+  }
+
   override async getResponse(request: ModelRequest): Promise<ModelResponse> {
     const response = await super.getResponse(chatRequest(request));
     if (isUnknownFinishReason(chatCompletionFinishReason(response.providerData))) {
@@ -91,16 +130,17 @@ export class OpenGeniChatCompletionsModel extends OpenAIChatCompletionsModel {
     let finishReason: unknown;
     let reasoning: ChatReasoning | undefined;
     let reasoningDetails: Record<string, unknown>[] | undefined;
-    const toolCalls = newChatToolCallStream();
+    const toolCallExtraContent = newChatToolCallExtraContent();
     for await (const event of super.getStreamedResponse(chatRequest(request))) {
       if (event.type === "model") {
         const observed = chatCompletionFinishReason(event.event);
         if (observed !== undefined && observed !== null) {
           finishReason = observed;
         }
-        appendChatToolCallDeltas(toolCalls, primaryChatChoice(event.event)?.delta);
-        const delta = chatReasoning(primaryChatChoice(event.event)?.delta);
-        const details = chatReasoningDetails(primaryChatChoice(event.event)?.delta);
+        const choiceDelta = primaryChatChoice(event.event)?.delta;
+        appendChatToolCallExtraContent(toolCallExtraContent, choiceDelta);
+        const delta = chatReasoning(choiceDelta);
+        const details = chatReasoningDetails(choiceDelta);
         if (details) appendChatReasoningDetails((reasoningDetails ??= []), details);
         if (delta)
           reasoning = {
@@ -117,7 +157,7 @@ export class OpenGeniChatCompletionsModel extends OpenAIChatCompletionsModel {
             response: {
               ...event.response,
               output: withChatReasoning(
-                withChatToolCallStream(event.response.output, toolCalls),
+                withChatToolCallExtraContent(event.response.output, toolCallExtraContent),
                 reasoning,
                 reasoningDetails,
               ),

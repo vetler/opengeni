@@ -22,16 +22,18 @@ export {
 } from "@opengeni/react";
 
 /**
- * Whether a send may carry this reasoning effort. A model without effort
- * control (no catalog efforts) never receives one, so any accepted value is
- * valid; the picker's placeholder option is not a constraint. The server
- * default for such a model is the deployment effort, not that placeholder.
+ * Whether a send may carry this reasoning effort. A model whose catalog lists
+ * no efforts offers no effort choice, so the session's recorded effort (the
+ * server default is the deployment effort) is accepted rather than requiring
+ * the picker's placeholder option. A model without capability data keeps the
+ * placeholder check.
  */
 export function reasoningEffortAllowedForModel(
   model: ClientModel,
   effort: ReasoningEffort,
 ): boolean {
   return (
-    !model.capabilities?.reasoning.efforts.length || effortOptionsForModel(model).includes(effort)
+    model.capabilities?.reasoning.efforts.length === 0 ||
+    effortOptionsForModel(model).includes(effort)
   );
 }

@@ -34,9 +34,14 @@ test("a model with effort control allows only its own efforts", () => {
 
 test("a model without effort control allows any accepted effort", () => {
   // The server default for such a model is the deployment effort (here xhigh),
-  // not the picker's `low` placeholder; neither reaches the provider.
-  for (const noControl of [model({ upstream: "unknown", runnable: false }), model()]) {
-    expect(reasoningEffortAllowedForModel(noControl, "xhigh")).toBe(true);
-    expect(reasoningEffortAllowedForModel(noControl, "low")).toBe(true);
-  }
+  // not the picker's `low` placeholder.
+  const noControl = model({ upstream: "unknown", runnable: false });
+  expect(reasoningEffortAllowedForModel(noControl, "xhigh")).toBe(true);
+  expect(reasoningEffortAllowedForModel(noControl, "low")).toBe(true);
+});
+
+test("a model without capability data keeps the placeholder check", () => {
+  const unknown = model();
+  expect(reasoningEffortAllowedForModel(unknown, "low")).toBe(true);
+  expect(reasoningEffortAllowedForModel(unknown, "xhigh")).toBe(false);
 });

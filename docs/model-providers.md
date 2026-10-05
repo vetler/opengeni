@@ -418,14 +418,10 @@ A registry model may add:
 Legacy `reasoningEffort` and `hostedWebSearch` booleans remain accepted. When a
 full capability record is also present, the legacy booleans must agree with it.
 
-A model whose reasoning capability is not runnable (`reasoningEffort: false`,
-the registry default) receives no reasoning effort on the wire. Its turns
-still record an accepted effort, but the worker omits it rather than sending
-the deployment default, which an upstream may reject (Gemini refuses `xhigh`).
-The same holds for custom OpenRouter slugs and customer OpenAI and Azure
-OpenAI connections, and the web new-session composer accepts any recorded
-effort for such a model instead of requiring its picker placeholder. Set `reasoningEffort: true`
-(or a full `capabilities.reasoning` record) to send the session's effort.
+A model whose catalog lists no efforts (`reasoningEffort: false`, the registry
+default) offers no effort choice in the web picker. Its sessions still record
+an effort (the server default is the deployment effort), and the web composers
+accept that recorded effort instead of requiring the picker's placeholder.
 
 Generic registry JSON cannot set `credentialSource` or `billing`. OpenGeni
 derives both from the provider kind:
@@ -678,20 +674,25 @@ is unchanged and the projection is deterministic for prompt caching.
 
 Google's OpenAI-compatible Chat Completions endpoint streams tool calls in a
 shape the SDK's stream accumulator mishandles, so `OpenGeniChatCompletionsModel`
-repairs the completed output from the raw chunks
-(`packages/runtime/src/chat-tool-call-stream.ts`):
+adapts it (`packages/runtime/src/chat-tool-call-stream.ts`):
 
 - Each call arrives whole, in its own chunk, with its own id and no `index`.
   The SDK keys streamed calls by `index`, which would merge parallel calls into
-  one call with concatenated names and arguments; they are rebuilt as separate
-  calls by id. Indexed (OpenAI-style) streams keep the SDK's items.
+  one call with concatenated names and arguments. Index-less deltas gain an
+  index before the SDK accumulates them: a new call id with a function name
+  starts a call, and anything else continues the previous one. Indexed
+  (OpenAI-style) chunks pass through unchanged.
 - The first call of each step carries `extra_content.google.thought_signature`,
   and Google rejects the next request with a 400 unless that object is
   replayed on the same call. The SDK keeps it for non-streamed replies but
   drops it while streaming, so it is restored to the call's `providerData` by
   call id. Durable history keeps it, and the SDK replays it on that tool call.
-  History projected to the Responses or Claude Messages API drops it, because
-  only a Chat route can read it.
+
+Request-locally (`packages/runtime/src/gemini-chat-request.ts`), Chat requests
+to a Gemini upstream clamp `reasoning_effort` `xhigh` or `max`, which Gemini
+rejects, to `high`. Chat requests to any other upstream drop
+`tool_calls[].extra_content`, and history projected to the Responses or Claude
+Messages API drops it too, because only Gemini reads it.
 
 The same endpoint returns errors as a one-element array (`[{ "error": … }]`).
 `ReplayableJsonOpenAI` and the quota retry veto both unwrap exactly that shape

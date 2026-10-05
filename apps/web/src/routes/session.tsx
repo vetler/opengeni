@@ -160,8 +160,8 @@ import {
 } from "@/lib/composer-launch";
 import { connectableSubscriptions, isDeploymentFreeModel } from "@/lib/deployment-free-model";
 import {
-  effortOptionsForModel,
   findPickerRow,
+  reasoningEffortAllowedForModel,
   runnableLatencyModesForModel,
 } from "@/lib/model-policy";
 import { sessionTimelineEmptyStateCopy } from "@/lib/session-empty-state";
@@ -2520,7 +2520,7 @@ function SessionChatPane(props: {
     selectedPolicyRow?.selectable &&
     (props.session.codexCompactionMode !== "remote_v2" ||
       selectedPolicyRow.catalog.source === "codex") &&
-    effortOptionsForModel(selectedPolicyRow.catalog).includes(reasoningEffort) &&
+    reasoningEffortAllowedForModel(selectedPolicyRow.catalog, reasoningEffort) &&
     (latencyMode === "standard" ||
       runnableLatencyModesForModel(selectedPolicyRow.catalog).includes(latencyMode)),
   );

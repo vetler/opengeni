@@ -8,24 +8,43 @@ import { ReplayableJsonOpenAI, requestBodyText } from "../src/replayable-json-bo
 
 const signature = { google: { thought_signature: "opaque-signature-fixture" } };
 
-type Shape = "gemini" | "openai-deltas";
+type Shape = "gemini" | "openai-deltas" | "fragmented-ids" | "split-extra";
+
+const splitExtra = { google: { other: "later-fixture" } };
+const mergedExtra = { google: { ...signature.google, ...splitExtra.google } };
 
 // Gemini's compatible endpoint streams each tool call whole, in its own chunk,
 // with its id and no `index`; only the first call of a step carries the
 // signature. OpenAI-style streams split a call across deltas that share an
-// index, and only the first carries the id.
+// index, and only the first carries the id. The last two shapes are edge cases:
+// an index-less call whose continuation chunk carries a fresh id but no name,
+// and a signature object that arrives across two deltas.
 function toolCallDeltas(shape: Shape, labels: string[]) {
   return labels.flatMap((label, index) => {
-    const call = {
-      id: `call-${label}`,
-      type: "function",
-      function: { name: "lookup", arguments: JSON.stringify({ key: label }) },
-    };
+    const args = JSON.stringify({ key: label });
+    const call = { id: `call-${label}`, type: "function", function: { name: "lookup" } };
     const extra = index === 0 ? { extra_content: signature } : {};
-    if (shape === "gemini") return [{ tool_calls: [{ ...call, ...extra }] }];
+    if (shape === "gemini")
+      return [
+        { tool_calls: [{ ...call, function: { ...call.function, arguments: args }, ...extra }] },
+      ];
+    if (shape === "fragmented-ids")
+      return [
+        {
+          tool_calls: [
+            { ...call, function: { name: "lookup", arguments: args.slice(0, 5) }, ...extra },
+          ],
+        },
+        {
+          tool_calls: [
+            { id: `fragment-${label}`, type: "function", function: { arguments: args.slice(5) } },
+          ],
+        },
+      ];
+    const later = shape === "split-extra" && index === 0 ? { extra_content: splitExtra } : {};
     return [
-      { tool_calls: [{ index, id: call.id, type: "function", function: { name: "lookup" } }] },
-      { tool_calls: [{ index, function: { arguments: call.function.arguments }, ...extra }] },
+      { tool_calls: [{ index, ...call, ...extra }] },
+      { tool_calls: [{ index, function: { arguments: args }, ...later }] },
     ];
   });
 }
@@ -35,6 +54,8 @@ const cases = [
   { shape: "gemini", labels: ["first", "second", "third"] },
   { shape: "openai-deltas", labels: ["first"] },
   { shape: "openai-deltas", labels: ["first", "second", "third"] },
+  { shape: "fragmented-ids", labels: ["first"] },
+  { shape: "split-extra", labels: ["first", "second"] },
 ] as const;
 
 for (const { shape, labels } of cases) {
@@ -105,6 +126,7 @@ for (const { shape, labels } of cases) {
     }
     await run.completed;
 
+    const expectedExtra = shape === "split-extra" ? mergedExtra : signature;
     expect(executions).toBe(labels.length);
     expect(requests).toHaveLength(2);
     const replayed = requests[1]!.messages.find(
@@ -115,7 +137,7 @@ for (const { shape, labels } of cases) {
         id: `call-${label}`,
         type: "function",
         function: { name: "lookup", arguments: JSON.stringify({ key: label }) },
-        ...(index === 0 ? { extra_content: signature } : {}),
+        ...(index === 0 ? { extra_content: expectedExtra } : {}),
       })),
     );
     const results = requests[1]!.messages.filter(
@@ -132,7 +154,7 @@ for (const { shape, labels } of cases) {
     expect(calls.map((call: Record<string, any>) => call.callId)).toEqual(
       labels.map((label) => `call-${label}`),
     );
-    expect(calls[0].providerData.extra_content).toEqual(signature);
+    expect(calls[0].providerData.extra_content).toEqual(expectedExtra);
     for (const call of calls.slice(1)) expect(call.providerData?.extra_content).toBeUndefined();
   });
 }

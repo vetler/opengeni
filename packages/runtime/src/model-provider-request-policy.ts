@@ -27,6 +27,7 @@ import {
   XaiSubscriptionUnavailableError,
 } from "./model-provider-errors";
 import type { ModelJsonRequestPolicy } from "./replayable-json-body";
+import { geminiChatRequestPolicy } from "./gemini-chat-request";
 import { geminiFunctionResponseRefPolicy } from "./gemini-function-response";
 import {
   chatReasoning,
@@ -297,7 +298,12 @@ export function modelRequestPolicyForProvider(
       path: request.path,
       body: result?.body ?? request.body,
     });
-    return gemini?.body ? { ...result, body: gemini.body } : result;
+    const withRefs = gemini?.body ? { ...result, body: gemini.body } : result;
+    const geminiChat = geminiChatRequestPolicy({
+      path: request.path,
+      body: withRefs?.body ?? request.body,
+    });
+    return geminiChat?.body ? { ...withRefs, body: geminiChat.body } : withRefs;
   };
 }
 

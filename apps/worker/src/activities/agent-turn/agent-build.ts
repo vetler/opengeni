@@ -59,7 +59,6 @@ import {
   structuredToolTransportForTurn,
   connectedSubscriptionImageGenerationAuthority,
   textVerbosityForTurn,
-  reasoningEffortForTurn,
   reasoningSummaryForTurn,
 } from "./tool-policy";
 import type { ClaimTurnOk } from "./claim";
@@ -668,7 +667,7 @@ export async function buildTurnAgent(deps: BuildTurnAgentDeps) {
           : {}),
         ...(preparedTools.inputWaitYield ? { inputWaitYield: preparedTools.inputWaitYield } : {}),
         ...(session.agent ? { agentConfig: session.agent, toolRouterInHistory } : {}),
-        reasoningEffort: reasoningEffortForTurn(resolvedModel, requestReasoningEffort),
+        reasoningEffort: requestReasoningEffort,
         ...(reasoningSummary ? { reasoningSummary } : {}),
         latencyMode: turnExecutionPolicy.latencyMode,
         ...(serviceTier ? { serviceTier } : {}),
